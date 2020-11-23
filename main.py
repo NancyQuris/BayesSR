@@ -24,7 +24,7 @@ num_frames = 5
 
 test_video = video_path
 num_reference_frame = 2  # one side
-scale_factor = 2
+scale_factor = 4
 max_iteration = 5
 eps = 0.0005  # stopping criteria
 eps_out = 0.0001
@@ -68,3 +68,17 @@ else:
     low_res_frames = low_res_frames_bic
     ycrcb_low = frame_utility.bgr2ycrcb(low_res_frames_bic)
 
+bicubic_high_frames = frame_utility.resize(low_res_frames, scale_factor, cv2.INTER_CUBIC, True)
+ycrcb_h_bicubic = frame_utility.resize(ycrcb_low, scale_factor, cv2.INTER_CUBIC, True)
+
+J, Cr_low, Cb_low = frame_utility.split_ycrcb_frames(ycrcb_low)
+I_init = frame_utility.create_initial_I(J, scale_factor)
+
+W0 = np.zeros((low_res_height, low_res_width))  # weight matrix for high resolution image
+Ws = np.zeros((high_res_height, high_res_width))  # weight matrix for derivative
+Wk = np.zeros((high_res_height, high_res_width))  # weight matrix for kernel
+Wi = []  # weight matrix for high resolution image (neighbouring frames)
+I_sr = I_init  # initialization of super resolved image
+
+for i in range(num_frames):
+    print("SR %d frame" % i)

@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import math
+from scipy import interpolate
 
 def frame_cutting(path):
     video_capture = cv2.VideoCapture(path)
@@ -13,13 +14,24 @@ def frame_cutting(path):
     video_capture.release()
 
 
-def resize(image, scale_factor, interpolation_method):
+def resize(image, scale_factor, interpolation_method, is_image_array=False):
     scale_percent = scale_factor * 100
-    width = int(image.shape[1] * scale_percent / 100)
-    height = int(image.shape[0] * scale_percent / 100)
-    dim = (width, height)
-    resized = cv2.resize(image, dim, interpolation=interpolation_method)
-    return resized
+
+    if is_image_array:
+        result = []
+        for i in image:
+            width = int(i.shape[1] * scale_percent / 100)
+            height = int(i.shape[0] * scale_percent / 100)
+            dim = (width, height)
+            resized = cv2.resize(i, dim, interpolation=interpolation_method)
+            result.append(resized)
+        return result
+    else:
+        width = int(image.shape[1] * scale_percent / 100)
+        height = int(image.shape[0] * scale_percent / 100)
+        dim = (width, height)
+        resized = cv2.resize(image, dim, interpolation=interpolation_method)
+        return resized
 
 
 def load_frame(path, start_frame_index, num_of_frame, scale_factor, interpolation_method=cv2.INTER_CUBIC):
@@ -175,6 +187,30 @@ def cconv2d(h, x):
         return np.fft.ifft2(fft_y)
 
 
+def cconv2d_k(h, x):
+    m, n = x.shape
+    mh, nh = h.shape
+
+    if m < mh or n < nh:
+        print("size of kernel must be bigger than image")
+    else:
+        fft_y = np.conj(psf2otf(x, x.shape)) * np.fft.fft2(h)
+        return np.fft.ifft2(fft_y)
+
+
+def cconv2dt(h, x):
+    m, n = x.shape
+    mh, nh = h.shape
+
+    if m < mh or n < nh:
+        print("size of kernel must be bigger than image")
+    else:
+        fft_h = np.conj(psf2otf(h, x.shape))
+        fft_x = np.fft.fft2(x)
+        fft_y = fft_h * fft_x
+        return np.fft.ifft2(fft_y)
+
+
 def down_sample(x, scale):
     m, n = x.shape
     if m % scale != 0 or n % scale != 0:
@@ -186,13 +222,40 @@ def down_sample(x, scale):
                 y[i, j] = x[i * scale, j * scale]
         return y
 
+
 def up_sample(x, scale):
     m, n = x.shape
     y = np.zeros(m * scale, n * scale)
     for i in range(m):
         for j in range(n):
             y[i * scale, j * scale] = x[i, j]
+    return y
 
+
+def warped_img(I, u, v):
+    m, n = I.shape
+    x_grid = np.arange(n)
+    y_grid = np.arange(m)
+    xPosv, yPosv = np.meshgrid(x_grid, y_grid)
+
+    xPosv = xPosv - u
+    yPosv = yPosv - v
+
+    for x in xPosv:
+        if x <= 1:
+            x = 1
+        elif x >= n:
+            x = n
+
+    for y in yPosv:
+        if y <= 1:
+            y = 1
+        elif y >= m:
+            y = m
+
+    FI = interpolate.interp2d(I, xPosv, yPosv, kind='cubic')
+
+    return FI
 
 def create_low_res_with_S_K(high_res_frames, h_2d, scale_factor, num_of_frames):
     low_res_frames = []
@@ -210,3 +273,15 @@ def create_low_res_with_S_K(high_res_frames, h_2d, scale_factor, num_of_frames):
         low_res_frames.append(cv2.merge((downsample_b, downsample_g, downsample_r)))
 
     return low_res_frames
+
+
+def create_initial_I(frames, scale_factor):
+    result = []
+    for f in frames:
+        if scale_factor == 2:
+            h = np.asarray([0.25, 0.5, 0.25, 0.5, 1, 0.5, 0.25, 0.5, 0.25]).reshape((3, 3))
+            tmp = up_sample(f, scale_factor)
+            result.append(cconv2d(h, tmp))
+        else:
+            result.append(resize(f, scale_factor, cv2.INTER_LINEAR))
+    return result
