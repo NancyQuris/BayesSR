@@ -1,36 +1,43 @@
 import cv2
 import numpy as np
 import math
-from scipy import interpolate
-from scipy import ndimage
+from scipy import ndimage, interpolate
+
+
+def get_dir_name(path):
+    path_length = len(path)
+    position_of_last_slash = 0
+    for i in range(path_length - 1, -1, -1):
+        current_char = path[i]
+        if current_char == '/':
+            position_of_last_slash = i + 1
+            break
+    return path[:position_of_last_slash]
+
 
 def frame_cutting(path):
     video_capture = cv2.VideoCapture(path)
     success, image = video_capture.read()
     count = 0
+    dir_path = get_dir_name(path)
     while success:
-        cv2.imwrite(path+"/original_frame%d.png" % count, image)
+        cv2.imwrite(dir_path + "original_frame%d.png" % count, image)
         success, image = video_capture.read()
         count += 1
     video_capture.release()
 
 
 def resize(image, scale_factor, interpolation_method, is_image_array=False):
-    scale_percent = scale_factor * 100
-
+    # if image is nparray, add .astype('uint8') to convert datatype
     if is_image_array:
         result = []
         for i in image:
-            width = int(i.shape[1] * scale_percent / 100)
-            height = int(i.shape[0] * scale_percent / 100)
-            dim = (width, height)
+            dim = (int(i.shape[1] * scale_factor), int(i.shape[0] * scale_factor))
             resized = cv2.resize(i, dim, interpolation=interpolation_method)
             result.append(resized)
         return result
     else:
-        width = int(image.shape[1] * scale_percent / 100)
-        height = int(image.shape[0] * scale_percent / 100)
-        dim = (width, height)
+        dim = (int(image.shape[1] * scale_factor), int(image.shape[0] * scale_factor))
         resized = cv2.resize(image, dim, interpolation=interpolation_method)
         return resized
 
@@ -38,8 +45,9 @@ def resize(image, scale_factor, interpolation_method, is_image_array=False):
 def load_frame(path, start_frame_index, num_of_frame, scale_factor, interpolation_method=cv2.INTER_CUBIC):
     original_images = []
     scaled_images = []
+    dir_path = get_dir_name(path)
     for i in range(start_frame_index, start_frame_index + num_of_frame):
-        original_frame = cv2.imread(path+"/original_frame%d.png" % i)
+        original_frame = cv2.imread(dir_path + "original_frame%d.png" % i)
         original_images.append(original_frame)
         resized = resize(original_frame, scale_factor, interpolation_method)
         scaled_images.append(resized)
@@ -52,14 +60,54 @@ def bgr2ycrcb(frames):
         converted_frames.append(cv2.cvtColor(f, cv2.COLOR_BGR2YCrCb))
     return converted_frames
 
+
 def y2rgb(frames, ycrcb_frames):
     converted_frames = []
     for i in range(len(frames)):
         current_ycrcb_frame = ycrcb_frames[i]
         current_ycrcb_frame[:, :, 0] = frames[i]
-        converted_frames.append(cv2.cvtColor(current_ycrcb_frame, cv2.COLOR_YCrCb2RGB))
+        converted_frames.append(cv2.cvtColor(np.float32(current_ycrcb_frame), cv2.COLOR_YCrCb2RGB))
     return converted_frames
 
+
+def pad_zeros(image, pad_height, pad_width):
+    height, width = image.shape
+    new_height, new_width = height + pad_height * 2, width + pad_width * 2
+    padded_image = np.zeros((new_height, new_width))
+    padded_image[pad_height:new_height - pad_height, pad_width:new_width - pad_width] = image
+    return padded_image
+
+
+def cconv2d(kernel, image):
+    # print(kernel.shape)
+    # print(image.shape)
+    # Hi, Wi = image.shape
+    # Hk, Wk = kernel.shape
+    # flipped_kernel = np.flip(np.flip(kernel, 0), 1)
+    # reshaped_kernel = flipped_kernel.reshape([Hk * Wk, 1])
+    # padded_image = pad_zeros(image, Hk // 2, Wk // 2)
+    # filter_window = np.zeros((Hi * Wi, Hk * Wk))
+    # image_x = 0
+    # image_y = 0
+    # for i in range(Hi * Wi):
+    #     y_range = image_y + Hk
+    #     x_range = image_x + Wk
+    #     window = padded_image[image_y: y_range, image_x: x_range]
+    #     filter_window[i] = window.reshape([1, Hk * Wk])
+    #     if image_x == Wi - 1:
+    #         image_x = 0
+    #         image_y += 1
+    #     else:
+    #         image_x += 1
+    # result = np.matmul(filter_window, reshaped_kernel)
+    # filtered_image = result.reshape([Hi, Wi])
+    # return filtered_image
+    #
+    # result = signal.convolve2d(image, kernel, mode='same')
+    # return result
+
+    # https://stackoverflow.com/questions/5710842/fastest-2d-convolution-or-image-filter-in-python
+    return np.fft.irfft2(np.fft.rfft2(image) * np.fft.rfft2(kernel, image.shape))
 
 
 def split_ycrcb_frames(frames):
@@ -74,12 +122,25 @@ def split_ycrcb_frames(frames):
     return y, cr, cb
 
 
-def add_noise(ycbcr_l, mean, variance):
+def add_noise(ycbcr_l, mean, std):
+    result = []
     for f in ycbcr_l:
-        gaussian_noise = np.random.normal(mean, math.sqrt(variance), f.shape)
-        f = f + gaussian_noise
+        gaussian_noise = np.random.normal(mean, std, f.shape)
+        result.append(f + gaussian_noise)
+    return result
 
-    return ycbcr_l
+
+def down_sample(f, ratio):
+    width, height = f.shape[1], f.shape[0]
+    return f[0:height:ratio, 0:width:ratio]
+
+
+def up_sample(f, ratio):
+    width, height = f.shape[1], f.shape[0]
+    new_width, new_height = width * ratio, height * ratio
+    res_image = np.zeros((new_height, new_width))
+    res_image[0:new_height:ratio, 0:new_width:ratio] = f
+    return res_image
 
 
 def psf2otf(psf, shape):
@@ -103,17 +164,17 @@ def psf2otf(psf, shape):
 
 def otf2psf(otf, shape):
     # https://blog.csdn.net/weixin_42206235/article/details/94037686
-    planes = [np.array(otf.shape), np.array(otf.shape)]
-    psf_circle = np.array(otf.shape)
-    cv2.dft(otf, psf_circle, cv2.DFT_INVERSE + cv2.DFT_SCALE, 0)
+    planes = [np.zeros(otf.shape), np.zeros(otf.shape)]
+    psf_circle = np.zeros(otf.shape)
+    cv2.dft(np.float32(otf), np.float32(psf_circle), cv2.DFT_INVERSE + cv2.DFT_SCALE, 0)
     cv2.split(psf_circle, planes)
 
     psf = planes[0].copy()
 
     x = psf.shape[0]
     y = psf.shape[1]
-    cx = (otf.shape[0] + 1) / 2
-    cy = (otf.shape[1] + 1) / 2
+    cx = int((otf.shape[0] + 1) / 2)
+    cy = int((otf.shape[1] + 1) / 2)
 
     p0 = planes[0][0:cx, 0:cy].copy()
     p1 = planes[0][cx:x, 0:cy].copy()
@@ -124,27 +185,12 @@ def otf2psf(otf, shape):
     psf[0:x - cx, 0:y - cy] = p3.copy()
     psf[0:x - cx, y - cy:y] = p1.copy()
     psf[x - cx:x, 0:y - cy] = p2.copy()
-
     return psf[0:shape[0], 0:shape[1]]
-
-def cconv2d(h, x):
-    m, n = x.shape
-    mh, nh = h.shape
-
-    if m < mh or n < nh:
-        print("size of kernel must be bigger than image")
-    else:
-        fft_h = psf2otf(h, x.shape)
-        fft_x = np.fft.fft2(x)
-        fft_y = fft_h * fft_x
-
-        return np.fft.ifft2(fft_y)
 
 
 def cconv2d_k(h, x):
     m, n = x.shape
     mh, nh = h.shape
-
     if m < mh or n < nh:
         print("size of kernel must be bigger than image")
     else:
@@ -155,7 +201,6 @@ def cconv2d_k(h, x):
 def cconv2dt(h, x):
     m, n = x.shape
     mh, nh = h.shape
-
     if m < mh or n < nh:
         print("size of kernel must be bigger than image")
     else:
@@ -165,49 +210,37 @@ def cconv2dt(h, x):
         return np.fft.ifft2(fft_y)
 
 
-def down_sample(x, scale):
-    m, n = x.shape
-    if m % scale != 0 or n % scale != 0:
-        print("size of x must be divided by scale")
-    else:
-        y = np.zeros(m / scale, n / scale)
-        for i in range(m/scale):
-            for j in range(n/scale):
-                y[i, j] = x[i * scale, j * scale]
-        return y
-
-
-def up_sample(x, scale):
-    m, n = x.shape
-    y = np.zeros(m * scale, n * scale)
-    for i in range(m):
-        for j in range(n):
-            y[i * scale, j * scale] = x[i, j]
-    return y
+def change_scale(x, scale):
+    new_height = int(x.shape[0] * scale)
+    new_width = int(x.shape[1] * scale)
+    new_image = np.zeros((new_height, new_width, 3), dtype='uint8') # if YCrCb or RGB
+    if len(x.shape) == 2:
+        new_image = np.zeros((new_height, new_width), dtype='uint8')
+    original_height = len(x)
+    original_width = len(x[0])
+    for h in range(new_height):
+        for w in range(new_width):
+            h_index = int(original_height / new_height * h)
+            w_index = int(original_width / new_width * w)
+            new_image[h][w] = x[h_index][w_index]
+    return new_image
 
 
 def warped_img(I, u, v):
     m, n = I.shape
     x_grid = np.arange(n)
     y_grid = np.arange(m)
-    xPosv, yPosv = np.meshgrid(x_grid, y_grid)
 
+    xPosv, yPosv = np.meshgrid(x_grid, y_grid)
     xPosv = xPosv - u
     yPosv = yPosv - v
 
-    for x in xPosv:
-        if x <= 1:
-            x = 1
-        elif x >= n:
-            x = n
+    xPosv[xPosv <= 1] = 1
+    xPosv[xPosv >= n] = n
+    yPosv[yPosv <= 1] = 1
+    yPosv[yPosv >= m] = m
 
-    for y in yPosv:
-        if y <= 1:
-            y = 1
-        elif y >= m:
-            y = m
-
-    FI = interpolate.interp2d(I, xPosv, yPosv, kind='cubic')
+    FI = ndimage.map_coordinates(I, [xPosv.ravel(), yPosv.ravel()], order=3, mode='nearest').reshape(I.shape)
     return FI
 
 
@@ -220,9 +253,9 @@ def create_low_res_with_S_K(high_res_frames, h_2d, scale_factor, num_of_frames):
         blurred_g = cconv2d(h_2d, g)
         blurred_r = cconv2d(h_2d, r)
 
-        downsample_b = down_sample(blurred_b, scale_factor)
-        downsample_g = down_sample(blurred_g, scale_factor)
-        downsample_r = down_sample(blurred_r, scale_factor)
+        downsample_b = change_scale(blurred_b, scale_factor)
+        downsample_g = change_scale(blurred_g, scale_factor)
+        downsample_r = change_scale(blurred_r, scale_factor)
 
         low_res_frames.append(cv2.merge((downsample_b, downsample_g, downsample_r)))
 
@@ -234,16 +267,15 @@ def create_initial_I(frames, scale_factor):
     for f in frames:
         if scale_factor == 2:
             h = np.asarray([0.25, 0.5, 0.25, 0.5, 1, 0.5, 0.25, 0.5, 0.25]).reshape((3, 3))
-            tmp = up_sample(f, scale_factor)
+            tmp = change_scale(f, scale_factor)
             result.append(cconv2d(h, tmp))
         else:
             result.append(resize(f, scale_factor, cv2.INTER_LINEAR))
     return result
 
 
-def shift_adjust(img, upscale, dir):
+def shift_adjust(img, upscale, direction):
     N = len(img)
-    shift = 0
     img_sh = img
     if upscale == 2:
         shift = 0.5
@@ -251,6 +283,8 @@ def shift_adjust(img, upscale, dir):
         shift = 1
     elif upscale == 4:
         shift = 1.5
+    else:
+        shift = 0
 
     if img[0].shape[2] == 3:
         img0 = img[0]
@@ -259,25 +293,34 @@ def shift_adjust(img, upscale, dir):
         m, n = img[0].shape
     x, y = np.meshgrid(np.linspace(0, 1, n), np.linspace(0, 1, m))
 
-    if dir == 1:
+    if direction == 1:
         x1 = x + shift
         y1 = y + shift
     else:
         x1 = x - shift
         y1 = y - shift
 
-    np.where(x1 < 1, 1)
-    np.where(x1 >=n, n)
-    np.where(y1 < 1, 1)
-    np.where(y1 >= m, m)
+    x1[x1 < 1] = 1
+    x1[x1 >= n] = n
+    y1[y1 < 1] = 1
+    y1[y1 >= m] = m
 
     if img[0].shape[2] == 3:
         for j in range(N):
             for i in range(3):
-                img_sh[j][:, :, i] = ndimage.map_coordinates(x, y, img[j][:, :, i], x1, y1)
+                # img_sh[j][:, :, i] = ndimage.map_coordinates(x, y, img[j][:, :, i], x1, y1)
+                # F = interpolate.RectBivariateSpline(x, y, img[j][:, :, i])
+                # img_sh[j][:, :, i] = np.diagonal(F(x1, y1)).reshape((m, n))
+                img_sh[j][:, :, i] = ndimage.map_coordinates(img[j][:, :, i], [x1.ravel(), y1.ravel()],
+                                                             order=3, mode='nearest').reshape((m, n))
     else:
         for j in range(N):
-            img_sh[j][:, :] = ndimage.map_coordinates(x, y, img_sh[j][:, :], x1, y1)
+            # img_sh[j][:, :] = ndimage.map_coordinates(x, y, img_sh[j][:, :], x1, y1)
+            # F = interpolate.RectBivariateSpline(x, y, img[j][:, :])
+            # img_sh[j][:, :] = np.diagonal(F(x1, y1)).reshape((m, n))
+            img_sh[j][:, :] = ndimage.map_coordinates(img[j][:, :], [x1.ravel(), y1.ravel()],
+                                                         order=3, mode='nearest').reshape((m, n))
+    return img_sh
 
 
 def get_RMSE(I1, I2):
@@ -287,7 +330,7 @@ def get_RMSE(I1, I2):
 
 
 def get_PSNR(I1, I2):
-    s1 = cv2.absdiff(I1, I2) #|I1 - I2|
+    s1 = cv2.absdiff(np.float32(I1), np.float32(I2)) #|I1 - I2|
     s1 = np.float32(s1)     # cannot make a square on 8 bits
     s1 = s1 * s1            # |I1 - I2|^2
     sse = s1.sum()          # sum elements per channel
@@ -337,6 +380,7 @@ def do_calculation(img1, img2):
     psnr = get_PSNR(img1, img2)
     ssim = get_MSSISM(img1, img2)
     return rmse, psnr, ssim
+
 
 def calculate_statistics_detail(elapsedTime, vid_est, vid_org, vid_bic, number_of_frames):
     stat_rmse = []
