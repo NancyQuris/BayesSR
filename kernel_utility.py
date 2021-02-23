@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import math
 import frame_utility
 
 
@@ -25,7 +24,7 @@ def create_h(sigma_h, h_size, mode, width, height):
         print('Blur kernel must be smaller than image')
         exit(1)
     x = np.linspace(-h_size/2, h_size/2, h_size)
-    x = (-x ** 2) / (2 * math.pow(sigma_h, 2))
+    x = (-x ** 2) / (2 * sigma_h ** 2)
     h_1d = np.exp(x)
     h_1d = h_1d / h_1d.sum()
     if mode == 1:
@@ -36,7 +35,7 @@ def create_h(sigma_h, h_size, mode, width, height):
         return h_1d, h_2d
 
 
-def weight_matrix(x, epsilon=0.001):  # weight1 and weight should be the same
+def weight_matrix(x, epsilon=0.001):
     W = 1 / np.sqrt(x ** 2 + epsilon ** 2)
     return W
 
@@ -44,7 +43,7 @@ def weight_matrix(x, epsilon=0.001):  # weight1 and weight should be the same
 def compute_Ax1_k(K, I, Wk, th, scale_factor):
     AK = frame_utility.cconv2d(K, I)
     SAK = frame_utility.down_sample(AK, scale_factor)
-    WkSAK = np.matmul(Wk, SAK)
+    WkSAK = Wk * SAK
     StWkSAK = frame_utility.up_sample(WkSAK, scale_factor)
     AtStWkSAK = frame_utility.cconv2dt(I, StWkSAK)
     AK1 = th * AtStWkSAK
@@ -54,7 +53,7 @@ def compute_Ax1_k(K, I, Wk, th, scale_factor):
 def compute_Ax1(I, W0, th, h_2d, scale_factor):
     KI = frame_utility.cconv2d(h_2d, I)
     SKI = frame_utility.down_sample(KI, scale_factor)
-    W0SKI = np.matmul(W0, SKI)
+    W0SKI = W0 * SKI
     StW0SKI = frame_utility.up_sample(W0SKI, scale_factor)
     KtStW0SKI = frame_utility.cconv2dt(h_2d, StW0SKI)
     AI1 = th * KtStW0SKI
@@ -65,10 +64,10 @@ def compute_Ax2(I, Ws):
     dx = np.array([0, 0, 0, -1, 0, 1, 0, 0, 0]).reshape(3, 3)
     dy = np.array([0, -1, 0, 0, 0, 0, 0, 1, 0]).reshape(3, 3)
     DxI = frame_utility.cconv2d(dx, I)
-    WsDxI = np.matmul(Ws, DxI)
+    WsDxI = Ws * DxI
     DxtWsDxI = frame_utility.cconv2dt(dx, WsDxI)
     DyI = frame_utility.cconv2d(dy, I)
-    WsDyI = np.matmul(Ws, DyI)
+    WsDyI = Ws * DyI
     DytWsDyI = frame_utility.cconv2dt(dy, WsDyI)
     AI2 = DxtWsDxI + DytWsDyI
     return AI2
@@ -77,7 +76,7 @@ def compute_Ax2(I, Ws):
 def compute_Ax3(FI, Wi, th, h_2d, scale_factor, ut, vt):
     KFI = frame_utility.cconv2d(h_2d, FI)
     SKFI = frame_utility.down_sample(KFI, scale_factor)
-    WSKFI = np.matmul(Wi, SKFI)
+    WSKFI = Wi * SKFI
     StWSKFI = frame_utility.up_sample(WSKFI, scale_factor)
     KtStWSKFI = frame_utility.cconv2dt(h_2d, StWSKFI)
     FtKtStWSKFI = frame_utility.warped_img(KtStWSKFI, ut, vt)
@@ -93,6 +92,7 @@ def compute_Ax_h(x, W0, Ws, th, h_2d, M, N, scale_factor, eta, j, n_back, n_for,
         else:
             Ax3_tmp = compute_Ax3(FI[j + i], Wi[j+i], th[j+i], h_2d, scale_factor, ut[j+i], vt[j+i])
         Ax3 = Ax3 + Ax3_tmp
+        # print(Ax3)
     Ax1 = compute_Ax1(x, W0, th[j], h_2d, scale_factor)
     Ax2 = compute_Ax2(x, Ws)
     Ax = Ax1 + eta * Ax2 + Ax3
@@ -143,34 +143,34 @@ def compute_Ws(I):
     return Ws
 
 
-def compute_b1(J0, W0, theta, h_2d, scale_factor):
-    W0J = np.matmul(W0, J0)
+def compute_b1(J0, W0, th, h_2d, scale_factor):
+    W0J = W0 * J0
     StW0J = frame_utility.up_sample(W0J, scale_factor)
     KtStW0J = frame_utility.cconv2dt(h_2d, StW0J)
-    b = theta * KtStW0J
+    b = th * KtStW0J
     return b
 
 
-def compute_b1_k(J0, Wk, theta, I, scale_factor):
-    WKJ = np.matmul(Wk, J0)
+def compute_b1_k(J0, Wk, th, I, scale_factor):
+    WKJ = Wk * J0
     StWkJ = frame_utility.up_sample(WKJ, scale_factor)
     AtStWkJ = frame_utility.cconv2dt(I, StWkJ)
-    b = theta * AtStWkJ
+    b = th * AtStWkJ
     return b
 
 
-def compute_b3(J, Wi, theta, h_2d, scale_factor, ut, vt):
-    WJ = np.matmul(Wi, J)
+def compute_b3(J, Wi, th, h_2d, scale_factor, ut, vt):
+    WJ = Wi * J
     StWJ = frame_utility.up_sample(WJ, scale_factor)
     KtStWJ = frame_utility.cconv2dt(h_2d, StWJ)
     FtKtStWJ = frame_utility.warped_img(KtStWJ, ut, vt)
-    b3 = theta * FtKtStWJ
+    b3 = th * FtKtStWJ
     return b3
 
 
 def compute_b_h(J, W0, theta, h_2d, scale_factor, M, N, j, n_back, n_for, Wi, ut, vt):
     b3 = np.zeros((M, N))
-    for i in range(-n_back - 1, n_for):
+    for i in range(-n_back, n_for + 1):
         if i == 0:
             b3_tmp = np.zeros((M, N))
         else:
@@ -185,19 +185,19 @@ def compute_b_h(J, W0, theta, h_2d, scale_factor, M, N, j, n_back, n_for, Wi, ut
 def conj_gradient_himg(Ax, x0, b, W0, Ws, theta, h_2d, M, N, scale_factor, eta, j, n_back, n_for, FI, Wi, ut, vt, show_image):
     max_iteration = 5
     epslion = 0.1
-    r = Ax - b
+    r = Ax.flatten() - b.flatten()
     p = -r
     k = 0
-    x = x0
+    x = x0.flatten()
     rsize = max(r.shape)
     while k < max_iteration:
         p_m = np.reshape(p, (M, N))
         Ap_m = compute_Ax_h(p_m, W0, Ws, theta, h_2d, M, N, scale_factor, eta, j, n_back, n_for, FI, Wi, ut, vt)
-        Ap = Ap_m
-        alpha = np.divide(np.matmul(np.transpose(r), r), np.matmul(np.transpose(p), Ap))
+        Ap = Ap_m.flatten()
+        alpha = (r.conj().T * r) / (p.conj().T * Ap)
         x = x + alpha * p
         r_new = r + alpha * Ap
-        beta = np.divide(np.matmul(np.transpose(r_new), r_new), np.matmul(np.transpose(r), r))
+        beta = (r_new.conj().T * r_new) / (r.conj().T * r)
         p_new = -r_new + beta * p
 
         diff_r_img = np.linalg.norm(r_new) / rsize
@@ -218,19 +218,19 @@ def conj_gradient_himg(Ax, x0, b, W0, Ws, theta, h_2d, M, N, scale_factor, eta, 
 def conj_gradient_himg_0(Ax, x0, b, W0, Ws, th, h_2d, M, N, show_image, scale_factor, eta):
     max_iteration = 200
     epslion = 0.01
-    r = Ax - b
+    r = Ax.flatten() - b.flatten()
     p = -r
     k = 0
-    x = x0
+    x = x0.flatten()
     rsize = max(r.shape)
     while k < max_iteration:
         p_m = np.reshape(p, (M, N))
         Ap_m = compute_Ax(p_m, W0, Ws, th, h_2d, scale_factor, eta)
-        Ap = Ap_m
-        alpha = np.matmul(np.transpose(r), r) / np.matmul(np.transpose(p), Ap)
+        Ap = Ap_m.flatten()
+        alpha = (r.conj().T * r) / (p.conj().T * Ap)
         x = x + alpha * p
         r_new = r + alpha * Ap
-        beta = np.matmul(np.transpose(r_new), r_new) / np.matmul(np.transpose(r), r)
+        beta = (r_new.conj().T * r_new) / (r.conj().T * r)
         p_new = -r_new + beta * p
         diff_r_img = np.linalg.norm(r_new) / rsize
         if diff_r_img < epslion:
@@ -250,27 +250,20 @@ def conj_gradient_himg_0(Ax, x0, b, W0, Ws, th, h_2d, M, N, show_image, scale_fa
 def conj_gradient_kernel(Ax, x0, b, Wk, Ws, th, I, M, N, hsize, xi, scale_factor):
     max_iteration = 100
     epslion = 0.01
-    # tmp = np.ones((M, N))
-    # hwnd = math.floor(hsize / 2)
-    # for i in range(M):
-    #     for j in range(N):
-    #         if i < M / 2 - hwnd or i > M / 2 + hwnd or j < N / 2 - hwnd or j > N / 2 + hwnd:
-    #             tmp[i, j] = 0
-    # mask = tmp
-    r = Ax - b
+    r = Ax.flatten() - b.flatten()
     p = -r
     k = 0
-    x = x0
+    x = x0.flatten()
     rsize = max(r.shape)
 
     while k < max_iteration:
         p_m = np.reshape(p, (M, N))
         Ap_m = compute_Ax_k(p_m, Wk, Ws, th, I, xi, scale_factor)
-        Ap = Ap_m
-        alpha = np.matmul(np.transpose(r), r) / np.matmul(np.transpose(p), Ap)
+        Ap = Ap_m.flatten()
+        alpha = (r.conj().T * r) / (p.conj().T * Ap)
         x = x + alpha * p
         r_new = r + alpha * Ap
-        beta = np.matmul(np.transpose(r_new), r_new) / np.matmul(np.transpose(r), r)
+        beta = (r_new.conj().T * r_new) / (r.conj().T * r)
         p_new = -r_new + beta * p
         diff_r_img = np.linalg.norm(r_new) / rsize
         if diff_r_img < epslion:
@@ -278,7 +271,7 @@ def conj_gradient_kernel(Ax, x0, b, Wk, Ws, th, I, M, N, hsize, xi, scale_factor
         k += 1
         r = r_new
         p = p_new
-        x1 = np.reshape(x, (M, N))
+        # x1 = np.reshape(x, (M, N))
         # cv2.imshow('image', np.float32(x1))
         # cv2.waitKey(0)
         # cv2.destroyAllWindows()

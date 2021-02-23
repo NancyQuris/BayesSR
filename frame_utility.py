@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import math
-from scipy import ndimage, interpolate
+from scipy import interpolate, ndimage, signal
 
 
 def get_dir_name(path):
@@ -47,7 +47,7 @@ def load_frame(path, start_frame_index, num_of_frame, scale_factor, interpolatio
     scaled_images = []
     dir_path = get_dir_name(path)
     for i in range(start_frame_index, start_frame_index + num_of_frame):
-        original_frame = cv2.imread(dir_path + "original_frame%d.png" % i)
+        original_frame = np.float32(cv2.imread(dir_path + "original_frame%d.png" % i))
         original_images.append(original_frame)
         resized = resize(original_frame, scale_factor, interpolation_method)
         scaled_images.append(resized)
@@ -59,6 +59,18 @@ def bgr2ycrcb(frames):
     for f in frames:
         converted_frames.append(cv2.cvtColor(f, cv2.COLOR_BGR2YCrCb))
     return converted_frames
+
+
+def merge(b, g, r):
+    result = []
+    for i in range(len(b)):
+        height, width = b[i].shape
+        current_image = np.zeros((height, width, 3))
+        current_image[:, :, 0] = b[i]
+        current_image[:, :, 1] = g[i]
+        current_image[:, :, 2] = r[i]
+        result.append(current_image)
+    return result
 
 
 def y2rgb(frames, ycrcb_frames):
@@ -79,35 +91,19 @@ def pad_zeros(image, pad_height, pad_width):
 
 
 def cconv2d(kernel, image):
-    # print(kernel.shape)
-    # print(image.shape)
-    # Hi, Wi = image.shape
-    # Hk, Wk = kernel.shape
-    # flipped_kernel = np.flip(np.flip(kernel, 0), 1)
-    # reshaped_kernel = flipped_kernel.reshape([Hk * Wk, 1])
-    # padded_image = pad_zeros(image, Hk // 2, Wk // 2)
-    # filter_window = np.zeros((Hi * Wi, Hk * Wk))
-    # image_x = 0
-    # image_y = 0
-    # for i in range(Hi * Wi):
-    #     y_range = image_y + Hk
-    #     x_range = image_x + Wk
-    #     window = padded_image[image_y: y_range, image_x: x_range]
-    #     filter_window[i] = window.reshape([1, Hk * Wk])
-    #     if image_x == Wi - 1:
-    #         image_x = 0
-    #         image_y += 1
-    #     else:
-    #         image_x += 1
-    # result = np.matmul(filter_window, reshaped_kernel)
-    # filtered_image = result.reshape([Hi, Wi])
-    # return filtered_image
-    #
-    # result = signal.convolve2d(image, kernel, mode='same')
-    # return result
+    return signal.convolve(image, kernel, mode='same')
 
-    # https://stackoverflow.com/questions/5710842/fastest-2d-convolution-or-image-filter-in-python
-    return np.fft.irfft2(np.fft.rfft2(image) * np.fft.rfft2(kernel, image.shape))
+
+def split_bgr_frames(frames):
+    b = []
+    g = []
+    r = []
+    for f in frames:
+        current_b, current_g, current_r = cv2.split(f)
+        b.append(current_b)
+        g.append(current_g)
+        r.append(current_r)
+    return b, g, r
 
 
 def split_ycrcb_frames(frames):
@@ -122,9 +118,9 @@ def split_ycrcb_frames(frames):
     return y, cr, cb
 
 
-def add_noise(ycbcr_l, mean, std):
+def add_noise(bgr_l, mean, std):
     result = []
-    for f in ycbcr_l:
+    for f in bgr_l:
         gaussian_noise = np.random.normal(mean, std, f.shape)
         result.append(f + gaussian_noise)
     return result
@@ -157,25 +153,28 @@ def psf2otf(psf, shape):
     for k in range(len(psf_size)):
         nffts = n_elem / psf_size[k]
         n_ops = n_ops + psf_size[k] * np.log2(psf_size[k]) * nffts
-    if np.max(np.abs(np.imag(otf))) / np.max(np.abs(otf)) <= n_ops * np.finfo(np.float32).eps:
+
+    if np.max(np.abs(otf)) == 0:
+        lhs_compare = np.max(np.abs(np.imag(otf)))
+    else:
+        lhs_compare = np.max(np.abs(np.imag(otf))) / np.max(np.abs(otf))
+    if  lhs_compare <= n_ops * np.finfo(np.float32).eps:
         otf = np.real(otf)
     return otf
 
 
-def otf2psf(otf, shape):
+def otf2psf(otf):
     # https://blog.csdn.net/weixin_42206235/article/details/94037686
     planes = [np.zeros(otf.shape), np.zeros(otf.shape)]
     psf_circle = np.zeros(otf.shape)
-    cv2.dft(np.float32(otf), np.float32(psf_circle), cv2.DFT_INVERSE + cv2.DFT_SCALE, 0)
-    cv2.split(psf_circle, planes)
+    psf_circle = cv2.dft(np.float32(otf), np.float32(psf_circle), cv2.DFT_INVERSE + cv2.DFT_SCALE, 0)
+    planes = cv2.split(psf_circle, planes)
 
     psf = planes[0].copy()
-
     x = psf.shape[0]
     y = psf.shape[1]
     cx = int((otf.shape[0] + 1) / 2)
     cy = int((otf.shape[1] + 1) / 2)
-
     p0 = planes[0][0:cx, 0:cy].copy()
     p1 = planes[0][cx:x, 0:cy].copy()
     p2 = planes[0][0:cx, cy:y].copy()
@@ -185,17 +184,7 @@ def otf2psf(otf, shape):
     psf[0:x - cx, 0:y - cy] = p3.copy()
     psf[0:x - cx, y - cy:y] = p1.copy()
     psf[x - cx:x, 0:y - cy] = p2.copy()
-    return psf[0:shape[0], 0:shape[1]]
-
-
-def cconv2d_k(h, x):
-    m, n = x.shape
-    mh, nh = h.shape
-    if m < mh or n < nh:
-        print("size of kernel must be bigger than image")
-    else:
-        fft_y = np.conj(psf2otf(x, x.shape)) * np.fft.fft2(h)
-        return np.fft.ifft2(fft_y)
+    return psf
 
 
 def cconv2dt(h, x):
@@ -204,10 +193,7 @@ def cconv2dt(h, x):
     if m < mh or n < nh:
         print("size of kernel must be bigger than image")
     else:
-        fft_h = np.conj(psf2otf(h, x.shape))
-        fft_x = np.fft.fft2(x)
-        fft_y = fft_h * fft_x
-        return np.fft.ifft2(fft_y)
+        return signal.convolve(x, h, mode='same')
 
 
 def change_scale(x, scale):
@@ -241,6 +227,7 @@ def warped_img(I, u, v):
     yPosv[yPosv >= m] = m
 
     FI = ndimage.map_coordinates(I, [xPosv.ravel(), yPosv.ravel()], order=3, mode='nearest').reshape(I.shape)
+    # FI = interpolate.interp2d(xPosv.ravel(), yPosv.ravel(), I, kind='cubic') too slow
     return FI
 
 
@@ -253,12 +240,10 @@ def create_low_res_with_S_K(high_res_frames, h_2d, scale_factor, num_of_frames):
         blurred_g = cconv2d(h_2d, g)
         blurred_r = cconv2d(h_2d, r)
 
-        downsample_b = change_scale(blurred_b, scale_factor)
-        downsample_g = change_scale(blurred_g, scale_factor)
-        downsample_r = change_scale(blurred_r, scale_factor)
-
+        downsample_b = down_sample(blurred_b, scale_factor)
+        downsample_g = down_sample(blurred_g, scale_factor)
+        downsample_r = down_sample(blurred_r, scale_factor)
         low_res_frames.append(cv2.merge((downsample_b, downsample_g, downsample_r)))
-
     return low_res_frames
 
 
@@ -267,7 +252,7 @@ def create_initial_I(frames, scale_factor):
     for f in frames:
         if scale_factor == 2:
             h = np.asarray([0.25, 0.5, 0.25, 0.5, 1, 0.5, 0.25, 0.5, 0.25]).reshape((3, 3))
-            tmp = change_scale(f, scale_factor)
+            tmp = up_sample(f, scale_factor)
             result.append(cconv2d(h, tmp))
         else:
             result.append(resize(f, scale_factor, cv2.INTER_LINEAR))
@@ -284,7 +269,7 @@ def shift_adjust(img, upscale, direction):
     elif upscale == 4:
         shift = 1.5
     else:
-        shift = 0
+        shift = 0.5 * (int(upscale) - 1)
 
     if img[0].shape[2] == 3:
         img0 = img[0]
